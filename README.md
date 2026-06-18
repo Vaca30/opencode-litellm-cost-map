@@ -260,7 +260,7 @@ After OpenCode loads a config that contains a LiteLLM provider and models, expec
 
 `Updated N` means `N` configured models received a runtime `model.cost` from LiteLLM `/public/model_hub` or the upstream cost map. `M kept existing cost fallback` means `M` configured models had no matching dynamic price, so their static `model.cost` from config stayed in place. If no LiteLLM provider or no models are configured, there may be no update line.
 
-The plugin writes diagnostics to stderr. `--print-logs` makes them visible.
+Success summaries are written to stdout. Fetch failures are written to stderr. `--print-logs` makes both visible.
 
 | Message | Meaning |
 |---|---|

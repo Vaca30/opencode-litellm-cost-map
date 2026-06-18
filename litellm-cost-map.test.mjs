@@ -40,6 +40,50 @@ test("runtime plugin module only exports the plugin entrypoint", () => {
   assert.deepEqual(Object.keys(pluginModule), ["default"])
 })
 
+test("runtime plugin writes success summary to stdout instead of stderr", async () => {
+  const originalFetch = globalThis.fetch
+  const originalLog = console.log
+  const originalError = console.error
+  const logs = []
+  const errors = []
+
+  globalThis.fetch = async (url) => {
+    const href = String(url)
+    if (href.includes("/public/model_hub")) {
+      return Response.json([
+        {
+          model_group: "priced",
+          input_cost_per_token: 0.000001,
+          output_cost_per_token: 0.000002,
+        },
+      ])
+    }
+    return Response.json({})
+  }
+  console.log = (...args) => logs.push(args.join(" "))
+  console.error = (...args) => errors.push(args.join(" "))
+
+  try {
+    const plugin = await pluginModule.default()
+    await plugin.config({
+      provider: {
+        litellm: {
+          npm: "@ai-sdk/openai-compatible",
+          options: { baseURL: "https://litellm.example.com/v1" },
+          models: { priced: {} },
+        },
+      },
+    })
+
+    assert.deepEqual(errors, [])
+    assert.deepEqual(logs, ["[litellm-cost-map] Updated 1 model costs from LiteLLM; 0 kept existing cost fallback"])
+  } finally {
+    globalThis.fetch = originalFetch
+    console.log = originalLog
+    console.error = originalError
+  }
+})
+
 test("PowerShell installer dry-run can bootstrap runtime files from GitHub when not run from a clone", { skip: !findPowerShell() }, () => {
   const powershell = findPowerShell()
   const tempRoot = mkdtempSync(join(tmpdir(), "litellm-cost-map-install-"))

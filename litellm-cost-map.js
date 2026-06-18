@@ -19,7 +19,7 @@ export default async function liteLlmCostMapPlugin() {
       const sources = await loadCostSources(cfg)
       const { updated, missing } = applyCosts(cfg, sources)
       if (updated > 0 || missing > 0) {
-        console.error(
+        console.log(
           `[litellm-cost-map] Updated ${updated} model costs from LiteLLM; ${missing} kept existing cost fallback`,
         )
       }
