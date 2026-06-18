@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# OpenCode config backups produced by the installer (never commit these)
+opencode.json.bak.*

@@ -1,0 +1,41 @@
+{
+  "name": "opencode-litellm-cost-map",
+  "version": "2.0.0",
+  "description": "opencode plugin that fills in accurate model pricing for LiteLLM (openai-compatible) providers so per-session cost is computed correctly.",
+  "type": "module",
+  "main": "litellm-cost-map.js",
+  "exports": {
+    ".": "./litellm-cost-map.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "files": [
+    "litellm-cost-map.js",
+    "litellm-cost-map-lib.mjs",
+    "README.md",
+    "INSTALL.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Vaca30",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "litellm",
+    "cost",
+    "pricing"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vaca30/opencode-litellm-cost-map.git"
+  },
+  "homepage": "https://github.com/Vaca30/opencode-litellm-cost-map#readme",
+  "bugs": {
+    "url": "https://github.com/Vaca30/opencode-litellm-cost-map/issues"
+  },
+  "license": "MIT"
+}
