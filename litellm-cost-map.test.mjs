@@ -1,4 +1,9 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 
 import {
@@ -15,8 +20,96 @@ import {
 } from "./litellm-cost-map-lib.mjs"
 import * as pluginModule from "./litellm-cost-map.js"
 
+const testDir = dirname(fileURLToPath(import.meta.url))
+
+function findPowerShell() {
+  for (const command of ["powershell", "pwsh"]) {
+    const result = spawnSync(command, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"], {
+      encoding: "utf8",
+    })
+    if (result.status === 0) return command
+  }
+  return undefined
+}
+
+function psQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`
+}
+
 test("runtime plugin module only exports the plugin entrypoint", () => {
   assert.deepEqual(Object.keys(pluginModule), ["default"])
+})
+
+test("PowerShell installer dry-run can bootstrap runtime files from GitHub when not run from a clone", { skip: !findPowerShell() }, () => {
+  const powershell = findPowerShell()
+  const tempRoot = mkdtempSync(join(tmpdir(), "litellm-cost-map-install-"))
+  try {
+    const scriptDir = join(tempRoot, "scripts")
+    mkdirSync(scriptDir, { recursive: true })
+    const scriptPath = join(scriptDir, "install.ps1")
+    copyFileSync(join(testDir, "scripts", "install.ps1"), scriptPath)
+
+    const result = spawnSync(
+      powershell,
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-DryRun", "-ConfigDir", join(tempRoot, "config")],
+      { encoding: "utf8" },
+    )
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stdout, /Source mode\s+: remote GitHub raw files/)
+    assert.match(result.stdout, /Would download litellm-cost-map\.js/)
+    assert.match(result.stdout, /Would download litellm-cost-map-lib\.mjs/)
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test("PowerShell installer scriptblock invocation returns control to the caller", { skip: !findPowerShell() }, () => {
+  const powershell = findPowerShell()
+  const tempRoot = mkdtempSync(join(tmpdir(), "litellm-cost-map-install-"))
+  try {
+    const scriptDir = join(tempRoot, "scripts")
+    mkdirSync(scriptDir, { recursive: true })
+    const scriptPath = join(scriptDir, "install.ps1")
+    copyFileSync(join(testDir, "scripts", "install.ps1"), scriptPath)
+
+    const command = [
+      `$script = Get-Content -Raw -LiteralPath ${psQuote(scriptPath)}`,
+      `& ([scriptblock]::Create($script)) -DryRun -ConfigDir ${psQuote(join(tempRoot, "config"))}`,
+      "'after-installer'",
+    ].join("; ")
+
+    const result = spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      encoding: "utf8",
+    })
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stdout, /after-installer/)
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test("PowerShell installer pipeline invocation returns control to the caller", { skip: !findPowerShell() }, () => {
+  const powershell = findPowerShell()
+  const tempRoot = mkdtempSync(join(tmpdir(), "litellm-cost-map-install-"))
+  try {
+    const command = [
+      `$env:OPENCODE_CONFIG = ${psQuote(join(tempRoot, "config"))}`,
+      `Get-Content -Raw -LiteralPath ${psQuote(join(testDir, "scripts", "install.ps1"))} | Invoke-Expression`,
+      "'after-installer'",
+    ].join("; ")
+
+    const result = spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      cwd: testDir,
+      encoding: "utf8",
+    })
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stdout, /after-installer/)
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
 })
 
 test("tlsFetchOptions disables TLS verification only when provider opts in", () => {

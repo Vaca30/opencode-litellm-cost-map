@@ -11,6 +11,16 @@ OpenCode auto-discovers local plugins with the glob `{plugin,plugins}/*.{ts,js}`
 
 After any installation method, **restart OpenCode** so the plugin is loaded.
 
+## PowerShell one-liner
+
+For Windows users who do not want to clone the repository first, run this single command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Vaca30/opencode-litellm-cost-map/main/scripts/install.ps1 | iex; if (Get-Command opencode -ErrorAction SilentlyContinue) { opencode --print-logs } else { 'OpenCode CLI not found on PATH. Restart OpenCode and run: opencode --print-logs' }"
+```
+
+When run this way, `install.ps1` downloads only `litellm-cost-map.js` and `litellm-cost-map-lib.mjs` from this repository's GitHub raw URLs, installs them into the OpenCode plugins directory, and returns control so `opencode --print-logs` can run.
+
 ## Method 1 — In-project installer script (recommended)
 
 Clone the repository and run the bundled installer from the repository root.
@@ -102,13 +112,19 @@ This works for both the CLI and the desktop app and needs no manual copy. The `p
 
 1. Restart OpenCode.
 2. Run any prompt and check the session cost — it should be non-zero and roughly match the model's price.
-3. To see the plugin's diagnostic output, run OpenCode with `--print-logs` and look for the success line:
+3. To see the plugin's diagnostic output, run OpenCode with logs enabled:
+
+   ```powershell
+   opencode --print-logs
+   ```
+
+4. Look for the plugin line:
 
    ```
    [litellm-cost-map] Updated N model costs from LiteLLM; M kept existing cost fallback
    ```
 
-   `N` is the number of models that received a price; `M` is the number that kept their static fallback cost.
+   `N` is the number of configured models that received a runtime cost from LiteLLM `/public/model_hub` or the upstream cost map. `M` is the number that kept the static fallback `cost` already defined in config. If no LiteLLM provider or no models are configured, there may be no update line.
 
 ## Troubleshooting
 
@@ -119,6 +135,8 @@ This works for both the CLI and the desktop app and needs no manual copy. The `p
 | `Failed to load <url>: ... UNABLE_TO_VERIFY_LEAF_SIGNATURE` | The proxy serves an unverifiable TLS leaf certificate. | Set `insecureSkipTLSVerify: true` in that provider's `options`. |
 | `Failed to load <url>: fetch failed` | The endpoint is unreachable (network or VPN). | Connect to the network/VPN. Falls back to upstream/static. |
 | Empty hub (no models priced from the hub) | `/public/model_hub` lists only public model groups and may be empty. | No action needed; the plugin falls back to the upstream cost map and then to your static config costs. |
+
+Use `insecureSkipTLSVerify: true` only for internal development or temporary troubleshooting. In production, fix the CA chain, install the correct corporate CA, or replace the certificate so normal TLS verification succeeds.
 
 ## Uninstall
 

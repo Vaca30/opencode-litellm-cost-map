@@ -1,6 +1,6 @@
 # opencode-litellm-cost-map
 
-An OpenCode plugin that fills in accurate model pricing for LiteLLM (openai-compatible) providers so that per-session cost is computed correctly.
+An OpenCode plugin that automatically injects LiteLLM model costs into the OpenCode runtime config for openai-compatible providers so that per-session cost is computed correctly.
 
 ## Why it exists
 
@@ -27,9 +27,79 @@ On OpenCode startup the plugin runs in the `config` hook and performs the follow
 2. For each selected provider it loads pricing from two sources:
    - the provider's own LiteLLM **`/public/model_hub`** endpoint (primary, unauthenticated), and
    - the **BerriAI upstream cost map** (`model_prices_and_context_window.json` on GitHub) as a fallback.
-3. For each model in the provider config it finds the matching pricing entry (see [Model lookup order](#model-lookup-order)), converts every price from per-token to per-million, and writes the result into `model.cost`. It also fills in missing metadata, limits, and capabilities from the source entry.
+3. For each model in the provider config it finds the matching pricing entry (see [Model lookup order](#model-lookup-order)), converts every price from per-token to per-million, and updates `model.cost` in the in-memory OpenCode runtime config. It also fills in missing metadata, limits, and capabilities from the source entry.
 
 The plugin never crashes startup. If a source cannot be fetched (offline, 403, TLS failure, HTML login page), it falls through to the next source and finally leaves the static `model.cost` from your configuration in place.
+
+## Recommended production setup
+
+Use a hybrid configuration approach. This plugin is a runtime refresh layer, not a replacement for a well-managed global or managed OpenCode config.
+
+In production, keep your global config (`~/.config/opencode/opencode.json`) or managed config (`OPENCODE_CONFIG`, deployment-managed config, or equivalent) responsible for the security baseline:
+
+- `enabled_providers` contains only the providers your organization allows.
+- The LiteLLM provider contains only approved production models under `models`.
+- Every production model has a static fallback `cost` in USD per 1M tokens.
+- The plugin is allowed to refine those prices at startup from LiteLLM `/public/model_hub`.
+
+The plugin does **not** rewrite `opencode.json` on disk. It runs in OpenCode's `config(cfg)` hook, mutates the already-loaded config object in memory, and must fetch prices again after every OpenCode restart. If LiteLLM is unavailable or a model has no matching price entry, OpenCode keeps the fallback `model.cost` already present in config.
+
+```text
+opencode.json / managed config
+   ↓
+OpenCode loads config into memory
+   ↓
+plugin config(cfg) hook runs
+   ↓
+plugin loads prices from LiteLLM /public/model_hub
+   ↓
+plugin updates model.cost in runtime config
+   ↓
+OpenCode calculates local session cost
+```
+
+Example production config:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["litellm"],
+  "model": "litellm/gpt-4o",
+  "small_model": "litellm/gpt-4o-mini",
+  "provider": {
+    "litellm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LiteLLM",
+      "options": {
+        "baseURL": "https://litellm.company.com/v1",
+        "apiKey": "{env:LITELLM_API_KEY}"
+      },
+      "models": {
+        "gpt-4o": {
+          "cost": {
+            "input": 5,
+            "output": 15
+          }
+        },
+        "gpt-4o-mini": {
+          "cost": {
+            "input": 0.15,
+            "output": 0.6
+          }
+        },
+        "claude-sonnet-4": {
+          "cost": {
+            "input": 3,
+            "output": 15
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Treat the numbers above as fallback examples and replace them with your approved production price list. If the plugin finds a fresher value in LiteLLM, the runtime value is updated for that OpenCode process only.
 
 ## File layout
 
@@ -47,9 +117,19 @@ The plugin never crashes startup. If a source cannot be fetched (offline, 403, T
 
 ## Install
 
-See [INSTALL.md](./INSTALL.md) for three installation methods and full verification and troubleshooting steps.
+See [INSTALL.md](./INSTALL.md) for installation methods and full verification and troubleshooting steps.
 
-Recommended one-liner (clone the repository, then run the bundled installer):
+### PowerShell one-liner
+
+This downloads the installer from this repository, installs the two runtime plugin files, then starts OpenCode with logs visible:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Vaca30/opencode-litellm-cost-map/main/scripts/install.ps1 | iex; if (Get-Command opencode -ErrorAction SilentlyContinue) { opencode --print-logs } else { 'OpenCode CLI not found on PATH. Restart OpenCode and run: opencode --print-logs' }"
+```
+
+When the script is not run from a local clone, the installer should print `Source mode    : remote GitHub raw files` and then `Install complete.` If OpenCode is on `PATH`, `opencode --print-logs` opens a fresh OpenCode process so the plugin can be loaded and its diagnostics are visible.
+
+Local clone usage:
 
 ```powershell
 # Windows PowerShell, from the repository root
@@ -93,7 +173,7 @@ Header values support `{env:NAME}` placeholders, which are resolved from the env
 
 ### Internal proxies with unverifiable TLS certificates
 
-Some internal LiteLLM proxies serve a leaf certificate that the runtime cannot verify, producing `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. For such a provider set `insecureSkipTLSVerify: true`:
+Some internal LiteLLM proxies serve a leaf certificate that the runtime cannot verify, producing `UNABLE_TO_VERIFY_LEAF_SIGNATURE`. The actual supported option is `insecureSkipTLSVerify: true` under that provider's `options`:
 
 ```jsonc
 {
@@ -114,6 +194,8 @@ Some internal LiteLLM proxies serve a leaf certificate that the runtime cannot v
 ```
 
 `insecureSkipTLSVerify: true` skips certificate verification **only for that provider's hub fetch**; it never disables verification globally or for any other provider or the upstream cost map.
+
+> Warning: use `insecureSkipTLSVerify: true` only for internal development or as a temporary workaround. Do not make it the production default. In production, fix the CA chain, install the correct corporate CA, or replace the certificate so normal TLS verification succeeds.
 
 > `tls: { rejectUnauthorized: false }` is a Bun fetch extension. It works because OpenCode plugins run on Bun. It would not work in a standalone Node script.
 
@@ -162,9 +244,23 @@ If a model is found in neither the hub nor the upstream map, the `model.cost` va
 }
 ```
 
-## Diagnostics / logs
+## How to verify
 
-The plugin writes to stderr. Make the messages visible by running OpenCode with `--print-logs`.
+Restart OpenCode after installation or config changes, then run:
+
+```powershell
+opencode --print-logs
+```
+
+After OpenCode loads a config that contains a LiteLLM provider and models, expect a plugin line like:
+
+```text
+[litellm-cost-map] Updated N model costs from LiteLLM; M kept existing cost fallback
+```
+
+`Updated N` means `N` configured models received a runtime `model.cost` from LiteLLM `/public/model_hub` or the upstream cost map. `M kept existing cost fallback` means `M` configured models had no matching dynamic price, so their static `model.cost` from config stayed in place. If no LiteLLM provider or no models are configured, there may be no update line.
+
+The plugin writes diagnostics to stderr. `--print-logs` makes them visible.
 
 | Message | Meaning |
 |---|---|
@@ -177,9 +273,20 @@ The plugin writes to stderr. Make the messages visible by running OpenCode with 
 
 To confirm cost works, restart OpenCode, run any prompt, and check the session cost. It should be non-zero and roughly match the model's price.
 
+## Recommended production checklist
+
+- Allowed providers are defined in global or managed OpenCode config, for example with `enabled_providers`.
+- Production models are explicitly listed under the managed LiteLLM provider's `models` object.
+- Every production model has a static fallback `cost` in USD per 1M tokens.
+- LiteLLM `/public/model_hub` is reachable from the client environment that runs OpenCode.
+- SSL certificates are valid and trusted by the OpenCode runtime.
+- `insecureSkipTLSVerify: true` is used only temporarily or in internal/dev environments, never as the production default.
+- Plugin logs are checked with `opencode --print-logs` after installation and after price/config changes.
+- Closed environments have egress policy that prevents unapproved internet fallback access; static fallback prices cover missing hub data.
+
 ## Testing
 
-The tests are pure unit tests (Node test runner, no network calls, no dependencies):
+The tests use the Node test runner, make no network calls, and require no npm dependencies:
 
 ```bash
 node --test
@@ -191,7 +298,7 @@ or
 npm test
 ```
 
-They cover price-unit conversion, hub and upstream parsing, model lookup, fallback behavior, TLS opt-in, header building, and URL building.
+They cover price-unit conversion, hub and upstream parsing, model lookup, fallback behavior, TLS opt-in, header building, URL building, and PowerShell installer bootstrap behavior. PowerShell installer tests run when `powershell` or `pwsh` is available.
 
 ## Development (TDD)
 

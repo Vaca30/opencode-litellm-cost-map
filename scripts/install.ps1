@@ -6,7 +6,9 @@
 .DESCRIPTION
     Copies the two runtime files (litellm-cost-map.js and
     litellm-cost-map-lib.mjs) from the repository root into the OpenCode
-    plugins directory (<configDir>/plugins). The test file is never copied.
+    plugins directory (<configDir>/plugins). If the script is run outside a
+    repository clone, it downloads those two runtime files from GitHub raw URLs.
+    The test file is never copied.
 
     OpenCode auto-discovers local plugins via the glob "{plugin,plugins}/*.{ts,js}",
     so once the entry file (litellm-cost-map.js) lives in <configDir>/plugins it
@@ -92,33 +94,51 @@ if ($Help) {
 }
 
 # ---------------------------------------------------------------------------
-# Self-locate the repository root (the script lives in <repo>/scripts)
+# Self-locate the repository root when the script lives in <repo>/scripts.
+# When piped through Invoke-RestMethod | Invoke-Expression, there is no script
+# path, so use the current directory and fall back to remote runtime files.
 # ---------------------------------------------------------------------------
 
 # $PSScriptRoot is the directory containing this script. Fall back for safety.
 $scriptDir = $PSScriptRoot
-if ([string]::IsNullOrEmpty($scriptDir)) {
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$invocationPath = $null
+$pathProperty = $MyInvocation.MyCommand.PSObject.Properties['Path']
+if ($null -ne $pathProperty) {
+    $invocationPath = [string]$pathProperty.Value
 }
-$repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..')).Path
+if ([string]::IsNullOrEmpty($scriptDir) -and -not [string]::IsNullOrEmpty($invocationPath)) {
+    $scriptDir = Split-Path -Parent $invocationPath
+}
+if ([string]::IsNullOrEmpty($scriptDir)) {
+    $scriptDir = (Get-Location).Path
+}
+
+if ((Split-Path -Leaf $scriptDir) -eq 'scripts') {
+    $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..')).Path
+} else {
+    $repoRoot = $scriptDir
+}
 
 $entryName = 'litellm-cost-map.js'
 $libName   = 'litellm-cost-map-lib.mjs'
+$rawBaseUrl = 'https://raw.githubusercontent.com/Vaca30/opencode-litellm-cost-map/main'
 
 $entrySrc = Join-Path $repoRoot $entryName
 $libSrc   = Join-Path $repoRoot $libName
 
 # ---------------------------------------------------------------------------
-# Validate runtime files exist next to the repo root
+# Resolve runtime source. Local clone wins; raw GitHub fallback enables the
+# documented PowerShell one-liner without cloning first.
 # ---------------------------------------------------------------------------
 
-$missing = @()
-if (-not (Test-Path -LiteralPath $entrySrc -PathType Leaf)) { $missing += $entryName }
-if (-not (Test-Path -LiteralPath $libSrc   -PathType Leaf)) { $missing += $libName }
+$localRuntimeFiles =
+    (Test-Path -LiteralPath $entrySrc -PathType Leaf) -and
+    (Test-Path -LiteralPath $libSrc   -PathType Leaf)
 
-if ($missing.Count -gt 0) {
-    Write-Err ("Required runtime file(s) not found in repo root '{0}': {1}" -f $repoRoot, ($missing -join ', '))
-    exit 1
+if ($localRuntimeFiles) {
+    $sourceMode = 'local repo files'
+} else {
+    $sourceMode = 'remote GitHub raw files'
 }
 
 # ---------------------------------------------------------------------------
@@ -173,6 +193,7 @@ $jsonPath   = Join-Path $configDir 'opencode.json'
 
 Write-Host ''
 Write-Info ("Repo root      : {0}" -f $repoRoot)
+Write-Info ("Source mode    : {0}" -f $sourceMode)
 Write-Info ("Config dir     : {0}  (source: {1})" -f $configDir, $cfgSource)
 Write-Info ("Plugin dir     : {0}" -f $pluginDir)
 Write-Info ("Reference mode : {0}" -f $(if ($Reference) { 'ON (will edit opencode.json)' } else { 'off (auto-discovery is enough)' }))
@@ -199,8 +220,8 @@ if (Test-Path -LiteralPath $pluginDir -PathType Container) {
 # ---------------------------------------------------------------------------
 
 $copyPairs = @(
-    @{ Src = $entrySrc; Dst = (Join-Path $pluginDir $entryName); Name = $entryName },
-    @{ Src = $libSrc;   Dst = (Join-Path $pluginDir $libName);   Name = $libName }
+    @{ Src = $entrySrc; Url = ("{0}/{1}" -f $rawBaseUrl, $entryName); Dst = (Join-Path $pluginDir $entryName); Name = $entryName },
+    @{ Src = $libSrc;   Url = ("{0}/{1}" -f $rawBaseUrl, $libName);   Dst = (Join-Path $pluginDir $libName);   Name = $libName }
 )
 
 foreach ($pair in $copyPairs) {
@@ -210,10 +231,19 @@ foreach ($pair in $copyPairs) {
         continue
     }
     if ($DryRun) {
-        Write-DryNote ("Would copy {0} -> {1}" -f $pair.Src, $pair.Dst)
+        if ($sourceMode -eq 'local repo files') {
+            Write-DryNote ("Would copy {0} -> {1}" -f $pair.Src, $pair.Dst)
+        } else {
+            Write-DryNote ("Would download {0} from {1} -> {2}" -f $pair.Name, $pair.Url, $pair.Dst)
+        }
     } else {
-        Copy-Item -LiteralPath $pair.Src -Destination $pair.Dst -Force
-        Write-Action ("Copied {0} -> {1}" -f $pair.Name, $pair.Dst)
+        if ($sourceMode -eq 'local repo files') {
+            Copy-Item -LiteralPath $pair.Src -Destination $pair.Dst -Force
+            Write-Action ("Copied {0} -> {1}" -f $pair.Name, $pair.Dst)
+        } else {
+            Invoke-WebRequest -Uri $pair.Url -OutFile $pair.Dst -UseBasicParsing -ErrorAction Stop
+            Write-Action ("Downloaded {0} -> {1}" -f $pair.Name, $pair.Dst)
+        }
     }
 }
 
@@ -337,4 +367,4 @@ if ($DryRun) {
     Write-Info 'Install complete.'
 }
 
-exit 0
+return
